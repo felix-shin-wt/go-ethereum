@@ -279,6 +279,8 @@ func (pool *LegacyPool) Filter(tx *types.Transaction) bool {
 	switch tx.Type() {
 	case types.LegacyTxType, types.AccessListTxType, types.DynamicFeeTxType:
 		return true
+	case types.LegacyFeeDelegateTxType, types.AccessListFeeDelegateTxType, types.DynamicFeeFeeDelegateTxType:
+		return true
 	default:
 		return false
 	}
@@ -609,7 +611,10 @@ func (pool *LegacyPool) validateTxBasics(tx *types.Transaction, local bool) erro
 		Accept: 0 |
 			1<<types.LegacyTxType |
 			1<<types.AccessListTxType |
-			1<<types.DynamicFeeTxType,
+			1<<types.DynamicFeeTxType |
+			1<<types.LegacyFeeDelegateTxType |
+			1<<types.AccessListFeeDelegateTxType |
+			1<<types.DynamicFeeFeeDelegateTxType,
 		MaxSize: txMaxSize,
 		MinTip:  pool.gasTip.Load().ToBig(),
 	}
@@ -686,7 +691,7 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		return false, err
 	}
 	// already validated by this point
-	from, _ := types.Sender(pool.signer, tx)
+	from, _ := tx.From(pool.signer)
 
 	// If the address is not yet known, request exclusivity to track the account
 	// only by this subpool until all transactions are evicted
@@ -744,7 +749,7 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		if !isLocal && pool.isGapped(from, tx) {
 			var replacesPending bool
 			for _, dropTx := range drop {
-				dropSender, _ := types.Sender(pool.signer, dropTx)
+				dropSender, _ := dropTx.From(pool.signer)
 				if list := pool.pending[dropSender]; list != nil && list.Contains(dropTx.Nonce()) {
 					replacesPending = true
 					break
@@ -765,7 +770,7 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 			log.Trace("Discarding freshly underpriced transaction", "hash", tx.Hash(), "gasTipCap", tx.GasTipCap(), "gasFeeCap", tx.GasFeeCap())
 			underpricedTxMeter.Mark(1)
 
-			sender, _ := types.Sender(pool.signer, tx)
+			sender, _ := tx.From(pool.signer)
 			dropped := pool.removeTx(tx.Hash(), false, sender != from) // Don't unreserve the sender of the tx being added if last from the acc
 
 			pool.changesSinceReorg += dropped
@@ -845,7 +850,7 @@ func (pool *LegacyPool) isGapped(from common.Address, tx *types.Transaction) boo
 // Note, this method assumes the pool lock is held!
 func (pool *LegacyPool) enqueueTx(hash common.Hash, tx *types.Transaction, local bool, addAll bool) (bool, error) {
 	// Try to insert the transaction into the future queue
-	from, _ := types.Sender(pool.signer, tx) // already validated
+	from, _ := tx.From(pool.signer) // already validated
 	if pool.queue[from] == nil {
 		pool.queue[from] = newList(false)
 	}
@@ -1049,7 +1054,7 @@ func (pool *LegacyPool) Status(hash common.Hash) txpool.TxStatus {
 	if tx == nil {
 		return txpool.TxStatusUnknown
 	}
-	from, _ := types.Sender(pool.signer, tx) // already validated
+	from, _ := tx.From(pool.signer) // already validated
 
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
@@ -1097,7 +1102,7 @@ func (pool *LegacyPool) removeTx(hash common.Hash, outofbound bool, unreserve bo
 	if tx == nil {
 		return 0
 	}
-	addr, _ := types.Sender(pool.signer, tx) // already validated during insertion
+	addr, _ := tx.From(pool.signer) // already validated during insertion
 
 	// If after deletion there are no more transactions belonging to this account,
 	// relinquish the address reservation. It's a bit convoluted do this, via a
@@ -1236,7 +1241,7 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 		case tx := <-pool.queueTxEventCh:
 			// Queue up the event, but don't schedule a reorg. It's up to the caller to
 			// request one later if they want the events sent.
-			addr, _ := types.Sender(pool.signer, tx)
+			addr, _ := tx.From(pool.signer)
 			if _, ok := queuedEvents[addr]; !ok {
 				queuedEvents[addr] = newSortedMap()
 			}
@@ -1322,7 +1327,7 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 
 	// Notify subsystems for newly added transactions
 	for _, tx := range promoted {
-		addr, _ := types.Sender(pool.signer, tx)
+		addr, _ := tx.From(pool.signer)
 		if _, ok := events[addr]; !ok {
 			events[addr] = newSortedMap()
 		}
@@ -1742,7 +1747,7 @@ func (as *accountSet) contains(addr common.Address) bool {
 // containsTx checks if the sender of a given tx is within the set. If the sender
 // cannot be derived, this method returns false.
 func (as *accountSet) containsTx(tx *types.Transaction) bool {
-	if addr, err := types.Sender(as.signer, tx); err == nil {
+	if addr, err := tx.From(as.signer); err == nil {
 		return as.contains(addr)
 	}
 	return false
@@ -1756,7 +1761,7 @@ func (as *accountSet) add(addr common.Address) {
 
 // addTx adds the sender of tx into the set.
 func (as *accountSet) addTx(tx *types.Transaction) {
-	if addr, err := types.Sender(as.signer, tx); err == nil {
+	if addr, err := tx.From(as.signer); err == nil {
 		as.add(addr)
 	}
 }

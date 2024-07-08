@@ -206,6 +206,8 @@ func (tx *Transaction) decodeTyped(b []byte) (TxData, error) {
 		inner = new(DynamicFeeTx)
 	case BlobTxType:
 		inner = new(BlobTx)
+	case LegacyFeeDelegateTxType, AccessListFeeDelegateTxType, DynamicFeeFeeDelegateTxType:
+		inner = new(FeeDelegateTx)
 	default:
 		return nil, ErrTxTypeNotSupported
 	}

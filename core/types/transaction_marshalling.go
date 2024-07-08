@@ -55,6 +55,9 @@ type txJSON struct {
 
 	// Only used for encoding:
 	Hash common.Hash `json:"hash"`
+
+	// FeeDelegation
+	Transaction []byte `json:"transaction,omitempty"`
 }
 
 // yParityValue returns the YParity value from JSON. For backwards-compatibility reasons,
@@ -153,6 +156,17 @@ func (tx *Transaction) MarshalJSON() ([]byte, error) {
 			enc.Commitments = itx.Sidecar.Commitments
 			enc.Proofs = itx.Sidecar.Proofs
 		}
+
+	case *FeeDelegateTx:
+		// FeeDelegation
+		transaction, err := itx.Transaction.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+		enc.Transaction = transaction
+		enc.V = (*hexutil.Big)(itx.V)
+		enc.R = (*hexutil.Big)(itx.R)
+		enc.S = (*hexutil.Big)(itx.S)
 	}
 	return json.Marshal(&enc)
 }
@@ -409,6 +423,36 @@ func (tx *Transaction) UnmarshalJSON(input []byte) error {
 			}
 		}
 
+	case LegacyFeeDelegateTxType, AccessListFeeDelegateTxType, DynamicFeeFeeDelegateTxType:
+		var itx FeeDelegateTx
+		inner = &itx
+		if dec.Transaction == nil {
+			return errors.New("")
+		}
+		if err := json.Unmarshal(dec.Transaction, &itx.Transaction); err != nil {
+			return err
+		}
+
+		// signature R
+		if dec.R == nil {
+			return errors.New("missing required field 'r' in transaction")
+		}
+		itx.R = (*big.Int)(dec.R)
+		// signature S
+		if dec.S == nil {
+			return errors.New("missing required field 's' in transaction")
+		}
+		itx.S = (*big.Int)(dec.S)
+		// signature V
+		if dec.V == nil {
+			return errors.New("missing required field 'v' in transaction")
+		}
+		itx.V = (*big.Int)(dec.V)
+		if itx.V.Sign() != 0 || itx.R.Sign() != 0 || itx.S.Sign() != 0 {
+			if err := sanityCheckSignature(itx.V, itx.R, itx.S, false); err != nil {
+				return err
+			}
+		}
 	default:
 		return ErrTxTypeNotSupported
 	}

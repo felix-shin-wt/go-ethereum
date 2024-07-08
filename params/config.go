@@ -347,6 +347,11 @@ type ChainConfig struct {
 	GrayGlacierBlock    *big.Int `json:"grayGlacierBlock,omitempty"`    // Eip-5133 (bomb delay) switch block (nil = no fork, 0 = already activated)
 	MergeNetsplitBlock  *big.Int `json:"mergeNetsplitBlock,omitempty"`  // Virtual fork after The Merge to use as a network splitter
 
+	// Wemix Fork
+	PangyoBlock   *big.Int `json:"pangyoBlock,omitempty"`   // Pangyo switch block (nil = no fork, 0 = already on pangyo)
+	ApplepieBlock *big.Int `json:"applepieBlock,omitempty"` // Applepie switch block (nil = no fork, 0 = already on applepie)
+	BriocheBlock  *big.Int `json:"briocheBlock,omitempty"`  // Brioche switch block (nil = no fork, 0 = already on brioche)
+
 	// Fork scheduling was switched from blocks to timestamps here
 
 	ShanghaiTime *uint64 `json:"shanghaiTime,omitempty"` // Shanghai switch time (nil = no fork, 0 = already on shanghai)
@@ -559,6 +564,11 @@ func (c *ChainConfig) IsTerminalPoWBlock(parentTotalDiff *big.Int, totalDiff *bi
 		return false
 	}
 	return parentTotalDiff.Cmp(c.TerminalTotalDifficulty) < 0 && totalDiff.Cmp(c.TerminalTotalDifficulty) >= 0
+}
+
+// IsLondon returns whether num is either equal to the London fork block or greater.
+func (c *ChainConfig) IsApplepie(num *big.Int) bool {
+	return isBlockForked(c.ApplepieBlock, num)
 }
 
 // IsShanghai returns whether time is either equal to the Shanghai fork time or greater.

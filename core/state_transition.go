@@ -146,6 +146,9 @@ type Message struct {
 	// account nonce in state. It also disables checking that the sender is an EOA.
 	// This field will be set to true for operations like RPC eth_call.
 	SkipAccountChecks bool
+
+	// FeeDelegation
+	FeePayer common.Address
 }
 
 // TransactionToMessage converts a transaction into a Message.
@@ -168,9 +171,20 @@ func TransactionToMessage(tx *types.Transaction, s types.Signer, baseFee *big.In
 	if baseFee != nil {
 		msg.GasPrice = cmath.BigMin(msg.GasPrice.Add(msg.GasTipCap, baseFee), msg.GasFeeCap)
 	}
+
 	var err error
-	msg.From, err = types.Sender(s, tx)
-	return msg, err
+	msg.From, err = tx.From(s)
+	if err != nil {
+		return nil, err
+	}
+
+	// FeeDelegation
+	msg.FeePayer, err = tx.FeePayer(s)
+	if err != nil {
+		return nil, err
+	}
+
+	return msg, nil
 }
 
 // ApplyMessage computes the new state by applying the given message
@@ -257,10 +271,11 @@ func (st *StateTransition) buyGas() error {
 	}
 	balanceCheckU256, overflow := uint256.FromBig(balanceCheck)
 	if overflow {
-		return fmt.Errorf("%w: address %v required balance exceeds 256 bits", ErrInsufficientFunds, st.msg.From.Hex())
+		return fmt.Errorf("%w: address %v required balance exceeds 256 bits", ErrInsufficientFunds, st.msg.FeePayer.Hex())
 	}
-	if have, want := st.state.GetBalance(st.msg.From), balanceCheckU256; have.Cmp(want) < 0 {
-		return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.msg.From.Hex(), have, want)
+	// FeeDelegation
+	if have, want := st.state.GetBalance(st.msg.FeePayer), balanceCheckU256; have.Cmp(want) < 0 {
+		return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.msg.FeePayer.Hex(), have, want)
 	}
 	if err := st.gp.SubGas(st.msg.GasLimit); err != nil {
 		return err
@@ -273,7 +288,7 @@ func (st *StateTransition) buyGas() error {
 
 	st.initialGas = st.msg.GasLimit
 	mgvalU256, _ := uint256.FromBig(mgval)
-	st.state.SubBalance(st.msg.From, mgvalU256, tracing.BalanceDecreaseGasBuy)
+	st.state.SubBalance(st.msg.FeePayer, mgvalU256, tracing.BalanceDecreaseGasBuy)
 	return nil
 }
 
@@ -498,7 +513,7 @@ func (st *StateTransition) refundGas(refundQuotient uint64) uint64 {
 	// Return ETH for remaining gas, exchanged at the original rate.
 	remaining := uint256.NewInt(st.gasRemaining)
 	remaining.Mul(remaining, uint256.MustFromBig(st.msg.GasPrice))
-	st.state.AddBalance(st.msg.From, remaining, tracing.BalanceIncreaseGasReturn)
+	st.state.AddBalance(st.msg.FeePayer, remaining, tracing.BalanceIncreaseGasReturn)
 
 	if st.evm.Config.Tracer != nil && st.evm.Config.Tracer.OnGasChange != nil && st.gasRemaining > 0 {
 		st.evm.Config.Tracer.OnGasChange(st.gasRemaining, 0, tracing.GasChangeTxLeftOverReturned)

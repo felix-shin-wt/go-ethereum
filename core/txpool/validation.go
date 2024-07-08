@@ -42,7 +42,7 @@ var (
 type ValidationOptions struct {
 	Config *params.ChainConfig // Chain configuration to selectively validate based on current fork rules
 
-	Accept  uint8    // Bitmap of transaction types that should be accepted for the calling pool
+	Accept  uint32   // Bitmap of transaction types that should be accepted for the calling pool
 	MaxSize uint64   // Maximum size of a transaction that the caller can meaningfully handle
 	MinTip  *big.Int // Minimum gas tip needed to allow a transaction into the caller pool
 }
@@ -69,6 +69,10 @@ func ValidateTransaction(tx *types.Transaction, head *types.Header, signer types
 	}
 	if !opts.Config.IsLondon(head.Number) && tx.Type() == types.DynamicFeeTxType {
 		return fmt.Errorf("%w: type %d rejected, pool not yet in London", core.ErrTxTypeNotSupported, tx.Type())
+	}
+	// FeeDelegation
+	if !opts.Config.IsApplepie(head.Number) && types.IsFeeDelegateTxType(tx.Type()) {
+		return fmt.Errorf("%w: type %d rejected, pool not yet in Applepie", core.ErrTxTypeNotSupported, tx.Type())
 	}
 	if !opts.Config.IsCancun(head.Number, head.Time) && tx.Type() == types.BlobTxType {
 		return fmt.Errorf("%w: type %d rejected, pool not yet in Cancun", core.ErrTxTypeNotSupported, tx.Type())
@@ -200,12 +204,19 @@ type ValidationOptionsWithState struct {
 // This check is public to allow different transaction pools to check the stateful
 // rules without duplicating code and running the risk of missed updates.
 func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, opts *ValidationOptionsWithState) error {
-	// Ensure the transaction adheres to nonce ordering
-	from, err := signer.Sender(tx) // already validated (and cached), but cleaner to check
+	// FeeDelegation
+	from, err := tx.From(signer)
 	if err != nil {
 		log.Error("Transaction sender recovery failed", "err", err)
 		return err
 	}
+	feePayer, err := tx.FeePayer(signer)
+	if err != nil {
+		log.Error("Transaction feepayer recovery failed", "err", err)
+		return err
+	}
+
+	// Ensure the transaction adheres to nonce ordering
 	next := opts.State.GetNonce(from)
 	if next > tx.Nonce() {
 		return fmt.Errorf("%w: next nonce %v, tx nonce %v", core.ErrNonceTooLow, next, tx.Nonce())
@@ -219,9 +230,19 @@ func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, op
 	}
 	// Ensure the transactor has enough funds to cover the transaction costs
 	var (
-		balance = opts.State.GetBalance(from).ToBig()
-		cost    = tx.Cost()
+		balance *big.Int = opts.State.GetBalance(from).ToBig()
+		cost    *big.Int = tx.Cost()
 	)
+
+	// FeeDelegation
+	if from != feePayer {
+		gas := new(big.Int).Sub(tx.Cost(), tx.Value())
+		feePayerBalance := opts.State.GetBalance(feePayer).ToBig()
+		if feePayerBalance.Cmp(gas) < 0 {
+			return fmt.Errorf("%w: balance %v, tx cost %v, overshot %v", core.ErrInsufficientFunds, balance, cost, new(big.Int).Sub(cost, balance))
+		}
+		cost = tx.Value()
+	}
 	if balance.Cmp(cost) < 0 {
 		return fmt.Errorf("%w: balance %v, tx cost %v, overshot %v", core.ErrInsufficientFunds, balance, cost, new(big.Int).Sub(cost, balance))
 	}

@@ -40,6 +40,9 @@ type sigCache struct {
 func MakeSigner(config *params.ChainConfig, blockNumber *big.Int, blockTime uint64) Signer {
 	var signer Signer
 	switch {
+	// FeeDeleagtion
+	case config.IsApplepie(blockNumber):
+		signer = NewApplepieSigner(config.ChainID)
 	case config.IsCancun(blockNumber, blockTime):
 		signer = NewCancunSigner(config.ChainID)
 	case config.IsLondon(blockNumber):
@@ -65,6 +68,9 @@ func MakeSigner(config *params.ChainConfig, blockNumber *big.Int, blockTime uint
 // have the current block number available, use MakeSigner instead.
 func LatestSigner(config *params.ChainConfig) Signer {
 	if config.ChainID != nil {
+		if config.ApplepieBlock != nil {
+			return NewApplepieSigner(config.ChainID)
+		}
 		if config.CancunTime != nil {
 			return NewCancunSigner(config.ChainID)
 		}
@@ -92,7 +98,7 @@ func LatestSignerForChainID(chainID *big.Int) Signer {
 	if chainID == nil {
 		return HomesteadSigner{}
 	}
-	return NewCancunSigner(chainID)
+	return NewApplepieSigner(chainID)
 }
 
 // SignTx signs the transaction using the given signer and private key.
@@ -166,6 +172,70 @@ type Signer interface {
 
 	// Equal returns true if the given signer is the same as the receiver.
 	Equal(Signer) bool
+}
+
+type applepieSigner struct{ cancunSigner }
+
+// NewApplepieSigner returns a signer that accepts
+// - FeeDelegation transactions
+// - EIP-4844 blob transactions
+// - EIP-1559 dynamic fee transactions
+// - EIP-2930 access list transactions,
+// - EIP-155 replay protected transactions, and
+// - legacy Homestead transactions.
+func NewApplepieSigner(chainID *big.Int) Signer {
+	return applepieSigner{cancunSigner{londonSigner{eip2930Signer{NewEIP155Signer(chainID)}}}}
+}
+
+func (s applepieSigner) Sender(tx *Transaction) (common.Address, error) {
+	if !IsFeeDelegateTxType(tx.Type()) {
+		return s.cancunSigner.Sender(tx)
+	}
+
+	V, R, S := tx.RawSignatureValues()
+	// feePayer Signature are defined to use 0 and 1 as their recovery
+	// id, add 27 to become equivalent to unprotected Homestead signatures.
+	V = new(big.Int).Add(V, big.NewInt(27))
+	if tx.ChainId().Cmp(s.chainId) != 0 {
+		return common.Address{}, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, tx.ChainId(), s.chainId)
+	}
+	return recoverPlain(s.Hash(tx), R, S, V, true)
+}
+
+func (s applepieSigner) Equal(s2 Signer) bool {
+	x, ok := s2.(applepieSigner)
+	return ok && x.chainId.Cmp(s.chainId) == 0
+}
+
+func (s applepieSigner) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big.Int, err error) {
+	if !IsFeeDelegateTxType(tx.Type()) {
+		return s.cancunSigner.SignatureValues(tx, sig)
+	}
+	// Check that chain ID of tx matches the signer. We also accept ID zero here,
+	// because it indicates that the chain ID was not specified in the tx.
+	if chainID := tx.ChainId(); chainID.Sign() != 0 && chainID.Cmp(s.chainId) != 0 {
+		return nil, nil, nil, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, chainID, s.chainId)
+	}
+	R, S, _ = decodeSignature(sig)
+	V = big.NewInt(int64(sig[64]))
+	return R, S, V, nil
+}
+
+func (s applepieSigner) Hash(tx *Transaction) common.Hash {
+	if !IsFeeDelegateTxType(tx.Type()) {
+		return s.cancunSigner.Hash(tx)
+	}
+	from, err := tx.From(s)
+	if err != nil {
+		return common.Hash{}
+	}
+	return prefixedRlpHash(
+		tx.Type(),
+		[]interface{}{
+			tx.OriginTx().Hash(),
+			from,
+		},
+	)
 }
 
 type cancunSigner struct{ londonSigner }

@@ -212,6 +212,9 @@ func (r *Receipt) decodeTyped(b []byte) error {
 		}
 		r.Type = b[0]
 		return r.setFromRLP(data)
+	case LegacyFeeDelegateTxType, AccessListFeeDelegateTxType, DynamicFeeFeeDelegateTxType:
+		// FeeDelegation TODO
+		return ErrTxTypeNotSupported
 	default:
 		return ErrTxTypeNotSupported
 	}
