@@ -35,6 +35,8 @@ profile.cov
 # IdeaIDE
 .idea
 
+.nodes
+
 # VS Code
 .vscode
 
